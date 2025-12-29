@@ -1,5 +1,5 @@
 """
-Data Preprocessing Pipeline for Connect4 Win Probability
+Data Preprocessing Pipeline for Connect4 Win Probability (REFRACTOR)
 
 Supports:
 - Self-play data (perspective augmentation ON)
@@ -10,7 +10,15 @@ Target:
 1 = DRAW
 2 = WIN
 
-WIN is always defined relative to the AI / side-to-move.
+WIN is defined using the SAME logic as your old working version:
+Self-play:
+  - original perspective = LOSS
+  - mirrored perspective = WIN
+Live play:
+  - winner == "AI" => WIN
+
+NOTE:
+This is intentionally simple and mirrors your old project behavior.
 """
 
 import pandas as pd
@@ -25,15 +33,6 @@ logger = logging.getLogger(__name__)
 
 
 class Connect4WinProbPreprocessor:
-    """
-    Preprocessor for Connect4 win probability.
-
-    Args:
-        self_play (bool):
-            True  -> self-play data (apply perspective augmentation)
-            False -> live AI vs human data (no augmentation)
-    """
-
     def __init__(self, self_play: bool = True):
         self.self_play = self_play
         self.scaler = StandardScaler()
@@ -46,7 +45,8 @@ class Connect4WinProbPreprocessor:
         logger.info(f"Loading dataset from {dataset_path}")
         df = pd.read_parquet(dataset_path)
         logger.info(f"Loaded {len(df):,} rows")
-        logger.info(f"Unique games: {df['gameId'].nunique()}")
+        if "gameId" in df.columns:
+            logger.info(f"Unique games: {df['gameId'].nunique()}")
         return df
 
     # ------------------------------------------------------------------
@@ -64,7 +64,8 @@ class Connect4WinProbPreprocessor:
         mirror["perspective"] = "mirrored"
 
         # Swap current player
-        mirror["current_player"] = mirror["current_player"].map({1: 2, 2: 1})
+        if "current_player" in mirror.columns:
+            mirror["current_player"] = mirror["current_player"].map({1: 2, 2: 1})
 
         # Swap board encoding (1 <-> 2)
         board_cols = [c for c in df.columns if c.startswith("board_before_")]
@@ -74,7 +75,7 @@ class Connect4WinProbPreprocessor:
         return pd.concat([df, mirror], ignore_index=True)
 
     # ------------------------------------------------------------------
-    # Target construction
+    # Target construction (OLD WORKING LOGIC)
     # ------------------------------------------------------------------
     def build_outcome_target(self, df: pd.DataFrame) -> pd.Series:
         """
@@ -86,20 +87,26 @@ class Connect4WinProbPreprocessor:
 
         Live-play:
             - winner identifies AI
-            - WIN if AI eventually wins and it's AI's turn
+            - WIN if winner == "AI"
         """
         y = pd.Series(0, index=df.index, dtype=int)
 
         # Draws
-        y[df["winner"].isna()] = 1
+        if "winner" in df.columns:
+            y[df["winner"].isna()] = 1
+        else:
+            # if winner missing, we can't label draws; treat as LOSS by default
+            logger.warning("winner column missing — draw detection disabled")
 
         if self.self_play:
-            # Mirrored perspective corresponds to winning side
+            # Mirrored perspective corresponds to winning side (your old logic)
+            if "perspective" not in df.columns:
+                raise ValueError("self_play=True but 'perspective' column missing. Did you forget augmentation?")
             y[(df["winner"].notna()) & (df["perspective"] == "mirrored")] = 2
         else:
             # Live play: winner must identify AI explicitly
             # ASSUMPTION: winner == "AI" when AI wins
-            y[(df["winner"] == "AI")] = 2
+            y[(df["winner"].astype(str) == "AI")] = 2
 
         return y
 
@@ -107,12 +114,6 @@ class Connect4WinProbPreprocessor:
     # Clean
     # ------------------------------------------------------------------
     def clean_data(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Clean dataset.
-
-        Note:
-        - No action filtering (not a policy model)
-        """
         logger.info("Cleaning dataset...")
         initial_rows = len(df)
 
@@ -125,7 +126,9 @@ class Connect4WinProbPreprocessor:
             df[mcts_cols] = df[mcts_cols].fillna(0)
 
         # Drop rows missing critical values
-        df = df.dropna(subset=["current_player", "moveIndex"])
+        missing_crit = [c for c in ["current_player", "moveIndex"] if c in df.columns]
+        if missing_crit:
+            df = df.dropna(subset=missing_crit)
 
         logger.info(f"Cleaned: {initial_rows} → {len(df)} rows")
         return df
@@ -138,6 +141,9 @@ class Connect4WinProbPreprocessor:
         df = df.copy()
 
         board_cols = [c for c in df.columns if c.startswith("board_before_")]
+        if not board_cols:
+            raise ValueError("No board_before_ columns found. Expected board_before_r{r}c{c}.")
+
         board_matrix = df[board_cols].values
 
         # Piece counts
@@ -146,12 +152,20 @@ class Connect4WinProbPreprocessor:
 
         # Center control
         center_cols = [f"board_before_r{r}c{c}" for r in range(6) for c in [2, 3, 4]]
-        center_matrix = df[center_cols].values
-        df["center_control_p1"] = (center_matrix == 1).sum(axis=1)
-        df["center_control_p2"] = (center_matrix == 2).sum(axis=1)
+        center_cols = [c for c in center_cols if c in df.columns]
+        if len(center_cols) == 18:
+            center_matrix = df[center_cols].values
+            df["center_control_p1"] = (center_matrix == 1).sum(axis=1)
+            df["center_control_p2"] = (center_matrix == 2).sum(axis=1)
+        else:
+            df["center_control_p1"] = 0
+            df["center_control_p2"] = 0
 
         # Move number
-        df["move_number"] = df["moveIndex"]
+        if "moveIndex" in df.columns:
+            df["move_number"] = df["moveIndex"]
+        else:
+            df["move_number"] = 0
 
         # MCTS statistics
         visit_cols = [f"mcts_visits_col{i}" for i in range(7) if f"mcts_visits_col{i}" in df.columns]
@@ -162,11 +176,17 @@ class Connect4WinProbPreprocessor:
             probs = visits / visits.sum(axis=1, keepdims=True)
             df["visit_entropy"] = -(probs * np.log(probs)).sum(axis=1)
             df["top_visit_ratio"] = visits.max(axis=1) / visits.sum(axis=1)
+        else:
+            df["visit_entropy"] = 0
+            df["top_visit_ratio"] = 0
 
         if qvalue_cols:
             qvalues = df[qvalue_cols].values
             df["qvalue_range"] = qvalues.max(axis=1) - qvalues.min(axis=1)
             df["qvalue_mean"] = qvalues.mean(axis=1)
+        else:
+            df["qvalue_range"] = 0
+            df["qvalue_mean"] = 0
 
         return df
 
@@ -190,46 +210,35 @@ class Connect4WinProbPreprocessor:
             "current_player"
         ]
 
-        feature_cols = (
-            board_cols +
-            mcts_visit_cols +
-            mcts_qvalue_cols +
-            mcts_prob_cols +
-            engineered_cols
-        )
-
+        feature_cols = board_cols + mcts_visit_cols + mcts_qvalue_cols + mcts_prob_cols + engineered_cols
         feature_cols = [c for c in feature_cols if c in df.columns]
+
         self.feature_columns = feature_cols
 
         X = df[feature_cols]
         y = self.build_outcome_target(df)
+        if "gameId" not in df.columns:
+            raise ValueError("gameId missing — required for leakage-free split.")
         game_ids = df["gameId"]
 
         logger.info(f"X shape: {X.shape}")
-        logger.info(f"Target distribution:\n{y.value_counts()}")
+        logger.info(f"Target distribution (FULL):\n{y.value_counts().sort_index()}")
 
         return X, y, game_ids
 
     # ------------------------------------------------------------------
     # GAME-level split (NO LEAKAGE)
     # ------------------------------------------------------------------
-    def split_data(
-        self,
-        X: pd.DataFrame,
-        y: pd.Series,
-        game_ids: pd.Series,
-        test_size: float,
-        val_size: float,
-        random_state: int
-    ):
+    def split_data(self, X: pd.DataFrame, y: pd.Series, game_ids: pd.Series,
+                   test_size: float, val_size: float, random_state: int):
         logger.info("Splitting data by GAME (no leakage)...")
 
         unique_games = game_ids.unique()
         np.random.seed(random_state)
         shuffled = np.random.permutation(unique_games)
 
-        n_test = int(len(unique_games) * test_size)
-        n_val = int((len(unique_games) - n_test) * val_size)
+        n_test = max(1, int(len(unique_games) * test_size))
+        n_val = max(1, int((len(unique_games) - n_test) * val_size))
 
         test_games = shuffled[:n_test]
         val_games = shuffled[n_test:n_test + n_val]
@@ -257,40 +266,19 @@ class Connect4WinProbPreprocessor:
         )
 
     def transform_new_data(self, df: pd.DataFrame) -> np.ndarray:
-        """
-        Transform new (unseen) game states for inference.
-
-        IMPORTANT:
-        - Assumes preprocess_pipeline() has already been run
-        - Does NOT perform train/val/test split
-        - Does NOT apply perspective augmentation automatically
-        """
-
         if self.feature_columns is None:
-            raise ValueError(
-                "Preprocessor not fitted. "
-                "Run preprocess_pipeline() before calling transform_new_data()."
-            )
+            raise ValueError("Preprocessor not fitted. Run preprocess_pipeline() first.")
 
         df = df.copy()
-
-        # Clean
         df = self.clean_data(df)
-
-        # Feature engineering
         df = self.engineer_features(df)
 
-        # Select features
         missing = [c for c in self.feature_columns if c not in df.columns]
         if missing:
             raise ValueError(f"Missing required feature columns: {missing}")
 
         X = df[self.feature_columns]
-
-        # Scale (using already-fitted scaler)
-        X_scaled = self.scaler.transform(X)
-
-        return X_scaled
+        return self.scaler.transform(X)
 
     # ------------------------------------------------------------------
     # Full pipeline
@@ -323,15 +311,12 @@ class Connect4WinProbPreprocessor:
             X, y, game_ids, test_size, val_size, random_state
         )
 
-        X_train_s, X_val_s, X_test_s = self.scale_features(
-            X_train, X_val, X_test
-        )
+        # LOG DISTRIBUTIONS PER SPLIT (this prevents “always win” surprises)
+        logger.info(f"Target distribution (TRAIN):\n{y_train.value_counts().sort_index()}")
+        logger.info(f"Target distribution (VAL):\n{y_val.value_counts().sort_index()}")
+        logger.info(f"Target distribution (TEST):\n{y_test.value_counts().sort_index()}")
 
-        if output_dir:
-            out = Path(output_dir)
-            out.mkdir(parents=True, exist_ok=True)
-            joblib.dump(self, out / "preprocessor.joblib")
-            logger.info(f"Saved preprocessor to {out / 'preprocessor.joblib'}")
+        X_train_s, X_val_s, X_test_s = self.scale_features(X_train, X_val, X_test)
 
         logger.info("=" * 80)
         logger.info("PREPROCESSING COMPLETE ✅")
@@ -345,5 +330,8 @@ class Connect4WinProbPreprocessor:
             "y_val": y_val.values,
             "y_test": y_test.values,
             "feature_names": self.feature_columns,
-            "preprocessor": self
+            "preprocessor": self,
+            # for EDA in training:
+            "df_processed": df,
+            "y_full": y.values,
         }

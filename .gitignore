@@ -14,10 +14,4 @@ models/*
 logs/*
 tensorboard-logs/*
 data/
-
-# But keep the directory structure
-!.gitignore
-!models/.gitkeep
-!eda_reports_winprob/.gitkeep
-!data/.gitkeep
-!tensorboard-logs/.gitkeep
+datasets/
