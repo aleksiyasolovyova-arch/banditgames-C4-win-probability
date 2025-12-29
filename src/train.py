@@ -38,7 +38,9 @@ from tensorboard_logger import WinProbTensorBoardLogger
 sys.path.insert(0, str(Path(__file__).parent))
 from preprocessing import Connect4WinProbPreprocessor
 
-# MLflow integration
+# ----------------------------------------------------------------------
+# MLflow integration (ONLY CHANGES BELOW)
+# ----------------------------------------------------------------------
 try:
     from mlflow_tracker import MLflowTracker
     MLFLOW_AVAILABLE = True
@@ -139,12 +141,10 @@ class WinProbabilityTrainer:
         y_pred = self.model.predict(X_test)
         y_proba = self.model.predict_proba(X_test)
 
-        # Core metrics
         accuracy = accuracy_score(y_test, y_pred)
         f1_macro = f1_score(y_test, y_pred, average="macro")
         logloss = log_loss(y_test, y_proba, labels=[0, 1, 2])
 
-        # Brier score (for calibration)
         brier = np.mean([
             brier_score_loss((y_test == c).astype(int), y_proba[:, c])
             for c in range(3)
@@ -226,21 +226,58 @@ def train_connect4_winprob(
         output_dir=f"{output_dir}/preprocessing"
     )
 
-    # Training
-    trainer = WinProbabilityTrainer(model_type=model_type)
-    trainer.train(
-        X_train=data["X_train"],
-        y_train=data["y_train"],
-        X_val=data["X_val"],
-        y_val=data["y_val"],
-        **model_params
-    )
+    # ---------------- MLflow START ----------------
+    tracker = None
+    if MLFLOW_AVAILABLE:
+        tracker = MLflowTracker(experiment_name="connect4-win-probability")
+        tracker.start_run(f"{model_type}-winprob-{version or 'dev'}")
 
-    # Evaluation
-    metrics = trainer.evaluate(
-        X_test=data["X_test"],
-        y_test=data["y_test"]
-    )
+        tracker.log_split_info(
+            train_size=len(data["X_train"]),
+            val_size=len(data["X_val"]),
+            test_size=len(data["X_test"])
+        )
+        tracker.log_hyperparameters({
+            **model_params,
+            "model_type": model_type,
+            "self_play": self_play
+        })
+
+    try:
+        # Training
+        trainer = WinProbabilityTrainer(model_type=model_type)
+        trainer.train(
+            X_train=data["X_train"],
+            y_train=data["y_train"],
+            X_val=data["X_val"],
+            y_val=data["y_val"],
+            **model_params
+        )
+
+        # Evaluation
+        metrics = trainer.evaluate(
+            X_test=data["X_test"],
+            y_test=data["y_test"]
+        )
+
+        if tracker:
+            tracker.log_test_metrics({
+                "accuracy": metrics["accuracy"],
+                "f1_macro": metrics["f1_macro"],
+                "log_loss": metrics["log_loss"],
+                "brier_score": metrics["brier_score"]
+            })
+
+            tracker.log_model(
+                trainer.model,
+                model_type="xgboost" if model_type == "xgboost" else "sklearn"
+            )
+
+    finally:
+        if tracker:
+            tracker.end_run()
+    # ---------------- MLflow END ----------------
+
     tb = WinProbTensorBoardLogger(
         log_dir="tensorboard-logs",
         experiment_name="connect4-winprob"
@@ -257,13 +294,6 @@ def train_connect4_winprob(
     tb.log_outcome_distribution(data["y_test"])
     tb.close()
 
-    # MLflow logging
-    if MLFLOW_AVAILABLE:
-        tracker = MLflowTracker("connect4-win-probability")
-        tracker.log_params(model_params)
-        tracker.log_metrics(metrics)
-
-    # Save
     model_path, metrics_path = trainer.save_model(
         output_dir=f"{output_dir}/{model_type}",
         version=version
