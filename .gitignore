@@ -1,0 +1,23 @@
+# Python
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.env
+.env
+env/
+venv/
+.venv/
+
+# Ignore all ML-generated data
+models/*
+logs/*
+tensorboard-logs/*
+data/
+
+# But keep the directory structure
+!.gitignore
+!models/.gitkeep
+!eda_reports_winprob/.gitkeep
+!data/.gitkeep
+!tensorboard-logs/.gitkeep
