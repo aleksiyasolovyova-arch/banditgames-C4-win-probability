@@ -84,6 +84,26 @@ class Connect4WinProbPreprocessor:
             y[non_draw & winner.str.startswith("ai")] = 2
 
         return y
+    def transform_new_data(self, df: pd.DataFrame) -> np.ndarray:
+        """
+        Transform a single (or batch) inference dataframe into
+        scaled features matching training-time schema.
+        """
+
+        if self.feature_columns is None:
+            raise RuntimeError("Preprocessor not fitted. feature_columns is None.")
+
+        # Apply the SAME steps as training
+        df = self.clean_data(df)
+        df = self.engineer_features(df)
+
+        # Ensure all expected features exist
+        missing = [c for c in self.feature_columns if c not in df.columns]
+        if missing:
+            raise ValueError(f"Missing required feature columns at inference: {missing}")
+
+        X = df[self.feature_columns]
+        return self.scaler.transform(X)
 
     # ------------------------------------------------------------------
     # Clean

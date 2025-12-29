@@ -25,7 +25,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 # -------------------------
 COPY src/ /app/src/
 COPY continuous_learning.py /app/continuous_learning.py
-COPY .env /app/.env
 
 # -------------------------
 # Runtime directories (Docker volumes)
