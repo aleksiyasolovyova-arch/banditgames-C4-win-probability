@@ -2,6 +2,7 @@ import os
 import joblib
 import logging
 from pathlib import Path
+from torch.utils.tensorboard import SummaryWriter
 
 import numpy as np
 from xgboost import XGBClassifier
@@ -84,9 +85,32 @@ def train_job(dataset_path: str, output_dir: str, version: str, self_play: bool 
     ll = log_loss(data["y_test"], proba, labels=[0, 1, 2])
     brier = _brier_multiclass(data["y_test"], proba)
 
-    logger.info(f"Accuracy: {acc:.4f}")
-    logger.info(f"LogLoss:  {ll:.4f}")
-    logger.info(f"Brier:    {brier:.4f}")
+    # -------------------------------
+    # WIN-PROBABILITY TELEMETRY
+    # -------------------------------
+    # Class index: 2 = WIN
+    win_probs = proba[:, 2]
+
+    mean_win_prob = float(win_probs.mean())
+    predicted_win_rate = float((win_probs > 0.5).mean())
+    actual_win_rate = float((data["y_test"] == 2).mean())
+
+    tb_log_dir = os.getenv("TENSORBOARD_LOG_DIR", "/workspace/tensorboard_logs")
+
+    writer = SummaryWriter(log_dir=os.path.join(tb_log_dir, "win_probability"))
+
+    writer.add_scalar("Confidence/MeanWinProbability", mean_win_prob, 0)
+    writer.add_scalar("Calibration/PredictedWinRate", predicted_win_rate, 0)
+    writer.add_scalar("Calibration/ActualWinRate", actual_win_rate, 0)
+
+    writer.close()
+
+    logger.info(
+        f"WinProb telemetry logged | "
+        f"mean={mean_win_prob:.3f} "
+        f"predicted={predicted_win_rate:.3f} "
+        f"actual={actual_win_rate:.3f}"
+    )
 
     # IMPORTANT sanity warning
     unique, counts = np.unique(data["y_test"], return_counts=True)
@@ -99,9 +123,9 @@ def train_job(dataset_path: str, output_dir: str, version: str, self_play: bool 
         )
 
     # 5) Save artifacts locally
-    joblib.dump(model, out_path / f"model_{version}.joblib")
-    logger.info(f"Model saved to {out_path}")
-
+    joblib.dump(model, out_path / f"winprob_model_{version}.joblib")
+    joblib.dump(preprocessor, out_path / f"winprob_preprocessor_{version}.joblib")
+    logger.info(f"Model and preprocessor saved to {out_path}")
     # 6) MLflow (opt-in)
     tracking_uri = os.getenv("MLFLOW_TRACKING_URI")
     experiment_name = os.getenv("MLFLOW_EXPERIMENT_NAME")
