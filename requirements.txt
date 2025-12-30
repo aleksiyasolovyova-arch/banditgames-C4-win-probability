@@ -9,5 +9,4 @@ seaborn
 python-dotenv
 joblib
 requests
-torch
 tensorboard
