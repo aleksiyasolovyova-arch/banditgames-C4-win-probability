@@ -19,7 +19,7 @@ def main():
 
     data_dir = Path(os.getenv("DATA_DIR", "/workspace/datasets"))
     models_dir = Path(os.getenv("MODELS_DIR", "/workspace/models"))
-    deploy_api_url = os.getenv("DEPLOY_API_URL", "").strip()
+    deploy_api_url = os.getenv("DEPLOY_API_URL", "http://connect4_ml_api:8001/deploy").strip()
     self_play = os.getenv("SELF_PLAY", "true").lower() == "true"
 
     logger.info(f"Watching {data_dir} for new parquet files...")
@@ -48,9 +48,12 @@ def main():
                     self_play=self_play
                 )
 
-                if results is not None and deploy_api_url:
+                if results is not None:
                     try:
-                        requests.post(deploy_api_url, json={"version": version}, timeout=5)
+                        requests.post(
+                            deploy_api_url,
+                            json={"version": version, "model_type": "winprob"}
+                        )
                         logger.info(f"Deployment signal sent for {version}")
                     except Exception as e:
                         logger.error(f"Deployment signal failed: {e}")
